@@ -34,6 +34,17 @@ def clean_int(value):
     return int(digits) if digits else None
 
 
+def clean_mileage(value):
+    v = value.lower().strip()
+    digits = re.sub(r"\D", "", v)
+    if not digits:
+        return None
+    num = int(digits)
+    if "tūkst" in v or "tūk" in v:
+        num *= 1000
+    return num
+
+
 def get_image_url(ad_url):
     try:
         time.sleep(random.uniform(0.3, 0.7))
@@ -100,10 +111,11 @@ def scrape_page(url, brand, conn):
         if len(columns) < 7:
             continue
 
-        model = columns[3].text.strip() if len(columns) > 3 else ""
+        model_links = columns[3].find_all("a") if len(columns) > 3 else []
+        model = model_links[-1].text.strip() if model_links else (columns[3].text.strip() if len(columns) > 3 else "")
         year = columns[4].text.strip() if len(columns) > 3 else ""
         engine_size = columns[5].text.strip() if len(columns) > 4 else ""
-        mileage = clean_int(columns[6].text.strip()) if len(columns) > 5 else None
+        mileage = clean_mileage(columns[6].text.strip()) if len(columns) > 5 else None
         price = clean_int(columns[7].text.strip()) if len(columns) > 7 else None
         url_full = "https://www.ss.com" + columns[2].a["href"] if columns[2].a else ""
 
