@@ -13,6 +13,15 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 }
 
+# autogidas.lt requires full browser headers (no brotli) to avoid 403
+HEADERS_LT = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate",
+    "Connection": "keep-alive",
+}
+
 EXCLUDE_SLUGS = {"sell", "spare-parts", "oldtimers", "rarities", "wanted", "car-exchange"}
 CATEGORY_SLUGS = {"electric-cars", "sport-cars", "tuned-cars", "exclusive-cars", "retro-cars"}
 MAX_WORKERS = 5
@@ -300,6 +309,156 @@ def scrape_autoportaal():
 
 
 # ---------------------------------------------------------------------------
+# autogidas.lt (Lithuania) scraper
+# ---------------------------------------------------------------------------
+
+AUTOGIDAS_BASE = "https://autogidas.lt"
+AUTOGIDAS_CARS = "https://autogidas.lt/en/skelbimai/automobiliai/"
+
+
+def get_autogidas_brands():
+    print("Lasu autogidas.lt markas...")
+    try:
+        r = requests.get(AUTOGIDAS_CARS, headers=HEADERS_LT, timeout=15)
+    except Exception as e:
+        print(f"Kļūda: {e}")
+        return []
+
+    if r.status_code != 200:
+        print(f"Kļūda: {r.status_code}")
+        return []
+
+    soup = BeautifulSoup(r.text, "html.parser")
+    brands = []
+    seen = set()
+    for a in soup.find_all("a", href=re.compile(r"^/en/skelbimai/automobiliai/[^/]+/$")):
+        href = a["href"]
+        slug = href.rstrip("/").split("/")[-1]
+        if slug not in seen:
+            seen.add(slug)
+            brands.append((AUTOGIDAS_BASE + href, slug, a.get_text(strip=True)))
+
+    print(f"Atrasts {len(brands)} autogidas.lt marku.")
+    return brands
+
+
+def scrape_autogidas_page(url, brand_name, conn):
+    print(f"Scrapo autogidas.lt: {url}")
+
+    try:
+        time.sleep(random.uniform(0.8, 1.5))
+        r = requests.get(url, headers=HEADERS_LT, timeout=15)
+    except Exception as e:
+        print(f"Kļūda: {e}")
+        return 0, False
+
+    if r.status_code != 200:
+        print(f"Kļūda: {r.status_code}")
+        return 0, False
+
+    soup = BeautifulSoup(r.text, "html.parser")
+    items = soup.find_all("div", class_="article-item")
+    if not items:
+        return 0, False
+
+    cursor = conn.cursor()
+    added = 0
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    for item in items:
+        try:
+            link = item.find("a", class_="item-link")
+            if not link:
+                continue
+            ad_url = AUTOGIDAS_BASE + link["href"]
+
+            h2 = item.find("h2", class_="item-title")
+            title = h2.get_text(strip=True) if h2 else ""
+            # Strip brand prefix to get model ("BMW 320" → "320")
+            if title.lower().startswith(brand_name.lower()):
+                model = title[len(brand_name):].strip()
+            else:
+                model = title
+
+            img = item.find("img", class_="js-image")
+            image_url = img["src"] if img and img.get("src") else None
+
+            price_div = item.find("div", class_="item-price")
+            price = clean_int(price_div.get_text()) if price_div else None
+
+            params = [s.get_text(strip=True) for s in item.find_all("span", class_="parameter-value")]
+
+            # Identify params by content — order varies between listings
+            year = None
+            mileage = None
+            engine_size = None
+            for p in params:
+                if re.match(r"^\d{4}-\d{2}$", p):          # "2010-12"
+                    year = p[:4]
+                elif " km" in p:                             # "330 000 km"
+                    mileage = clean_int(p)
+                elif " L, " in p and "kW" in p:             # "2.0 L, 135 kW"
+                    engine_size = p.split(" L")[0].strip()
+
+            cursor.execute("""
+                INSERT IGNORE INTO cars (brand, model, year, engine_size, mileage, price, url, image_url, country, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'LT', %s, %s)
+            """, (brand_name, model, year, engine_size, mileage, price, ad_url, image_url, now, now))
+            conn.commit()
+            added += cursor.rowcount
+        except Exception as e:
+            print(f"DB kļūda (autogidas row): {e}")
+            conn.rollback()
+
+    cursor.close()
+    print(f"[LT] Ievietoti {added} ieraksti no {url}")
+    return added, True
+
+
+def scrape_autogidas_brand(base_url, slug, brand_name):
+    print(f"\n=== autogidas.lt marka: {brand_name} ===")
+    total_added = 0
+    page = 1
+
+    conn = get_db()
+    try:
+        while True:
+            url = base_url if page == 1 else f"{base_url}?page={page}"
+            added, has_more = scrape_autogidas_page(url, brand_name, conn)
+            total_added += added
+            if not has_more:
+                break
+            page += 1
+            time.sleep(random.uniform(0.5, 1.2))
+    finally:
+        conn.close()
+
+    print(f"=== autogidas.lt '{brand_name}' pabeigta. Pievienoti {total_added} ieraksti. ===")
+    return total_added
+
+
+def scrape_autogidas():
+    print("\n=== Sāku autogidas.lt (Lietuva) ===")
+    brands = get_autogidas_brands()
+    if not brands:
+        print("Nav atrasta neviena marka.")
+        return 0
+
+    total = 0
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(scrape_autogidas_brand, url, slug, name): name for url, slug, name in brands}
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                total += future.result()
+            except Exception as e:
+                print(f"Kļūda ({name}): {e}")
+
+    print(f"=== autogidas.lt pabeigts. Pievienoti {total} ieraksti. ===")
+    return total
+
+
+# ---------------------------------------------------------------------------
 
 def main():
     print("Sākam datu vākšanu...")
@@ -323,7 +482,11 @@ def main():
     print("\n--- IGAUNIJA (autoportaal.ee) ---")
     total_ee = scrape_autoportaal()
 
-    print(f"\nGatavs. LV: {total_lv if brand_urls else 0}, EE: {total_ee}")
+    # Lithuania — autogidas.lt
+    print("\n--- LIETUVA (autogidas.lt) ---")
+    total_lt = scrape_autogidas()
+
+    print(f"\nGatavs. LV: {total_lv if brand_urls else 0}, EE: {total_ee}, LT: {total_lt}")
 
 
 if __name__ == "__main__":
