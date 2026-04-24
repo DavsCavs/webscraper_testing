@@ -346,7 +346,7 @@ def scrape_autogidas_page(url, brand_name, conn):
     print(f"Scrapo autogidas.lt: {url}")
 
     try:
-        time.sleep(random.uniform(0.8, 1.5))
+        time.sleep(random.uniform(2.0, 4.0))
         r = requests.get(url, headers=HEADERS_LT, timeout=15)
     except Exception as e:
         print(f"Kļūda: {e}")
@@ -445,7 +445,7 @@ def scrape_autogidas():
         return 0
 
     total = 0
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+    with ThreadPoolExecutor(max_workers=2) as executor:
         futures = {executor.submit(scrape_autogidas_brand, url, slug, name): name for url, slug, name in brands}
         for future in as_completed(futures):
             name = futures[future]
