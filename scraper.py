@@ -14,7 +14,14 @@ HEADERS = {
 }
 
 EXCLUDE_SLUGS = {"sell", "spare-parts", "oldtimers", "rarities", "wanted", "car-exchange"}
+CATEGORY_SLUGS = {"electric-cars", "sport-cars", "tuned-cars", "exclusive-cars", "retro-cars"}
 MAX_WORKERS = 5
+
+# Brands whose names are two words — needed to split autoportaal.ee "<h2>Brand Model</h2>"
+MULTI_WORD_BRANDS = {
+    "Alfa Romeo", "Aston Martin", "Land Rover", "Range Rover",
+    "Rolls Royce", "Rolls-Royce", "Mercedes Benz", "Mercedes-Benz",
+}
 
 DB_CONFIG = {
     "host": "127.0.0.1",
@@ -79,13 +86,13 @@ def get_brand_urls():
             slug = match.group(1)
             if slug not in EXCLUDE_SLUGS and slug not in seen:
                 seen.add(slug)
-                brand_urls.append(("https://www.ss.com" + href, slug))
+                brand_urls.append(("https://www.ss.com" + href, slug, slug))
 
     print(f"Atrasts {len(brand_urls)} marku.")
     return brand_urls
 
 
-def scrape_page(url, brand, conn):
+def scrape_page(url, brand, slug, conn):
     print(f"Scrapo: {url}")
 
     response = requests.get(url, headers=HEADERS)
@@ -108,15 +115,29 @@ def scrape_page(url, brand, conn):
 
     for row in rows:
         columns = row.find_all("td")
-        if len(columns) < 7:
+
+        # Category pages (electric-cars, sport-cars, tuned-cars, etc.) have an
+        # extra brand column at index 3, shifting all other fields to the right.
+        if slug in CATEGORY_SLUGS or len(columns) >= 9:
+            brand_links = columns[3].find_all("a")
+            actual_brand = brand_links[-1].text.strip() if brand_links else columns[3].text.strip()
+            model_links = columns[4].find_all("a")
+            model = model_links[-1].text.strip() if model_links else columns[4].text.strip()
+            year = columns[5].text.strip()
+            engine_size = columns[6].text.strip()
+            mileage = clean_mileage(columns[7].text.strip())
+            price = clean_int(columns[8].text.strip())
+        elif len(columns) >= 8:
+            actual_brand = brand
+            model_links = columns[3].find_all("a")
+            model = model_links[-1].text.strip() if model_links else columns[3].text.strip()
+            year = columns[4].text.strip()
+            engine_size = columns[5].text.strip()
+            mileage = clean_mileage(columns[6].text.strip())
+            price = clean_int(columns[7].text.strip())
+        else:
             continue
 
-        model_links = columns[3].find_all("a") if len(columns) > 3 else []
-        model = model_links[-1].text.strip() if model_links else (columns[3].text.strip() if len(columns) > 3 else "")
-        year = columns[4].text.strip() if len(columns) > 3 else ""
-        engine_size = columns[5].text.strip() if len(columns) > 4 else ""
-        mileage = clean_mileage(columns[6].text.strip()) if len(columns) > 5 else None
-        price = clean_int(columns[7].text.strip()) if len(columns) > 7 else None
         url_full = "https://www.ss.com" + columns[2].a["href"] if columns[2].a else ""
 
         if not url_full:
@@ -126,9 +147,9 @@ def scrape_page(url, brand, conn):
 
         try:
             cursor.execute("""
-                INSERT IGNORE INTO cars (brand, model, year, engine_size, mileage, price, url, image_url, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (brand, model, year, engine_size, mileage, price, url_full, image_url, now, now))
+                INSERT IGNORE INTO cars (brand, model, year, engine_size, mileage, price, url, image_url, country, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'LV', %s, %s)
+            """, (actual_brand, model, year, engine_size, mileage, price, url_full, image_url, now, now))
             conn.commit()
             added += cursor.rowcount
         except Exception as e:
@@ -140,7 +161,7 @@ def scrape_page(url, brand, conn):
     return added, True
 
 
-def scrape_brand(base_url, brand):
+def scrape_brand(base_url, brand, slug):
     print(f"\n=== Sāku marku: {brand} ===")
     total_added = 0
     page = 1
@@ -149,7 +170,7 @@ def scrape_brand(base_url, brand):
     try:
         while True:
             url = base_url if page == 1 else f"{base_url}page{page}.html"
-            added, has_more = scrape_page(url, brand, conn)
+            added, has_more = scrape_page(url, brand, slug, conn)
             total_added += added
 
             if not has_more:
@@ -164,25 +185,145 @@ def scrape_brand(base_url, brand):
     return total_added
 
 
-def main():
-    print("Sākam SS.com datu vākšanu...")
+# ---------------------------------------------------------------------------
+# autoportaal.ee (Estonia) scraper
+# ---------------------------------------------------------------------------
 
-    brand_urls = get_brand_urls()
-    if not brand_urls:
-        print("Nav atrasta neviena marka. Pārtraucam.")
-        return
+AUTOPORTAAL_BASE = "https://autoportaal.ee/en/used-cars"
 
+
+def split_brand_model(h2_text):
+    """Split 'Opel Astra' into ('Opel', 'Astra'). Handles known two-word brands."""
+    text = h2_text.strip()
+    for multi in MULTI_WORD_BRANDS:
+        if text.startswith(multi + " "):
+            return multi, text[len(multi):].strip()
+    parts = text.split(" ", 1)
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    return text, ""
+
+
+def scrape_autoportaal_page(page_num, conn):
+    url = f"{AUTOPORTAAL_BASE}?page={page_num}"
+    print(f"Scrapo autoportaal.ee: {url}")
+
+    try:
+        time.sleep(random.uniform(0.5, 1.2))
+        response = requests.get(url, headers=HEADERS, timeout=15)
+    except Exception as e:
+        print(f"Kļūda: {e}")
+        return 0, False
+
+    if response.status_code != 200:
+        print(f"Kļūda: {response.status_code}")
+        return 0, False
+
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    containers = soup.find_all("div", class_="advertisementListContainer")
+    if not containers:
+        return 0, False
+
+    cursor = conn.cursor()
+    added = 0
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    for container in containers:
+        try:
+            data = container.find("a", class_="dataArea")
+            if not data:
+                continue
+
+            h2 = data.find("h2")
+            if not h2:
+                continue
+            brand, model = split_brand_model(h2.get_text())
+
+            ad_url = data["href"]
+
+            # Image lives in the photoArea sibling
+            img = container.find("img")
+            image_url = img["src"] if img and img.get("src") else None
+
+            # Price from the first finalPrice div
+            price_div = data.find("div", class_="finalPrice")
+            price = clean_int(price_div.get_text()) if price_div else None
+
+            # Use additionalDataMobile which has proper li classes
+            mobile = data.find("div", class_="additionalDataMobile")
+            year_li     = mobile.find("li", class_="year")     if mobile else None
+            mileage_li  = mobile.find("li", class_="mileage")  if mobile else None
+            engine_li   = mobile.find("li", class_="power_kw") if mobile else None
+
+            year    = year_li.get_text(strip=True)    if year_li    else None
+            mileage = clean_int(mileage_li.get_text()) if mileage_li else None
+
+            engine_size = None
+            if engine_li:
+                raw = engine_li.get_text(strip=True)  # "2.0, 81 kW"
+                engine_size = raw.split(",")[0].strip() if raw and raw != "-" else None
+
+            cursor.execute("""
+                INSERT IGNORE INTO cars (brand, model, year, engine_size, mileage, price, url, image_url, country, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'EE', %s, %s)
+            """, (brand, model, year, engine_size, mileage, price, ad_url, image_url, now, now))
+            conn.commit()
+            added += cursor.rowcount
+        except Exception as e:
+            print(f"DB kļūda (autoportaal row): {e}")
+            conn.rollback()
+
+    cursor.close()
+    print(f"[EE] Ievietoti {added} ieraksti no {url}")
+    return added, True
+
+
+def scrape_autoportaal():
+    print("\n=== Sāku autoportaal.ee (Igaunija) ===")
     total_added = 0
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(scrape_brand, url, brand): brand for url, brand in brand_urls}
-        for future in as_completed(futures):
-            brand = futures[future]
-            try:
-                total_added += future.result()
-            except Exception as e:
-                print(f"Kļūda ({brand}): {e}")
+    page = 0
 
-    print(f"\nGatavs. Kopā pievienoti {total_added} ieraksti.")
+    conn = get_db()
+    try:
+        while True:
+            added, has_more = scrape_autoportaal_page(page, conn)
+            total_added += added
+            if not has_more:
+                break
+            page += 1
+    finally:
+        conn.close()
+
+    print(f"=== autoportaal.ee pabeigts. Pievienoti {total_added} ieraksti. ===")
+    return total_added
+
+
+# ---------------------------------------------------------------------------
+
+def main():
+    print("Sākam datu vākšanu...")
+
+    # Latvia — ss.com
+    print("\n--- LATVIJA (ss.com) ---")
+    brand_urls = get_brand_urls()
+    if brand_urls:
+        total_lv = 0
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = {executor.submit(scrape_brand, url, brand, slug): brand for url, brand, slug in brand_urls}
+            for future in as_completed(futures):
+                brand = futures[future]
+                try:
+                    total_lv += future.result()
+                except Exception as e:
+                    print(f"Kļūda ({brand}): {e}")
+        print(f"\nLatvija: kopā pievienoti {total_lv} ieraksti.")
+
+    # Estonia — autoportaal.ee
+    print("\n--- IGAUNIJA (autoportaal.ee) ---")
+    total_ee = scrape_autoportaal()
+
+    print(f"\nGatavs. LV: {total_lv if brand_urls else 0}, EE: {total_ee}")
 
 
 if __name__ == "__main__":
