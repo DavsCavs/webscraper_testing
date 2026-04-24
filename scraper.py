@@ -42,15 +42,18 @@ DB_CONFIG = {
 
 
 def get_db():
+    # Opens and returns a new MySQL connection.
     return mysql.connector.connect(**DB_CONFIG)
 
 
 def clean_int(value):
+    # Strips all non-digit characters and returns an integer, or None if empty.
     digits = re.sub(r"\D", "", value)
     return int(digits) if digits else None
 
 
 def clean_mileage(value):
+    # Parses Latvian mileage strings; multiplies by 1000 if "tūkst" suffix is present.
     v = value.lower().strip()
     digits = re.sub(r"\D", "", v)
     if not digits:
@@ -62,6 +65,7 @@ def clean_mileage(value):
 
 
 def get_image_url(ad_url):
+    # Visits an ss.com ad page and returns the first gallery image URL (.800.jpg).
     try:
         time.sleep(random.uniform(0.3, 0.7))
         response = requests.get(ad_url, headers=HEADERS, timeout=10)
@@ -78,6 +82,7 @@ def get_image_url(ad_url):
 
 
 def get_brand_urls():
+    # Fetches the ss.com cars main page and returns a list of (url, slug, slug) for each brand.
     print("Lasu marku sarakstu...")
     response = requests.get(MAIN_URL, headers=HEADERS)
     if response.status_code != 200:
@@ -102,6 +107,7 @@ def get_brand_urls():
 
 
 def scrape_page(url, brand, slug, conn):
+    # Scrapes one ss.com listing page and inserts all found cars into the DB.
     print(f"Scrapo: {url}")
 
     response = requests.get(url, headers=HEADERS)
@@ -171,6 +177,7 @@ def scrape_page(url, brand, slug, conn):
 
 
 def scrape_brand(base_url, brand, slug):
+    # Paginates through all listing pages for one ss.com brand and scrapes each.
     print(f"\n=== Sāku marku: {brand} ===")
     total_added = 0
     page = 1
@@ -202,7 +209,7 @@ AUTOPORTAAL_BASE = "https://autoportaal.ee/en/used-cars"
 
 
 def split_brand_model(h2_text):
-    """Split 'Opel Astra' into ('Opel', 'Astra'). Handles known two-word brands."""
+    # Splits "Opel Astra" into ("Opel", "Astra"). Handles known two-word brands like "Land Rover".
     text = h2_text.strip()
     for multi in MULTI_WORD_BRANDS:
         if text.startswith(multi + " "):
@@ -214,6 +221,7 @@ def split_brand_model(h2_text):
 
 
 def scrape_autoportaal_page(page_num, conn):
+    # Scrapes one paginated page of autoportaal.ee and inserts found cars into the DB.
     url = f"{AUTOPORTAAL_BASE}?page={page_num}"
     print(f"Scrapo autoportaal.ee: {url}")
 
@@ -289,6 +297,7 @@ def scrape_autoportaal_page(page_num, conn):
 
 
 def scrape_autoportaal():
+    # Entry point for the Estonian scraper — iterates all pages until no listings are found.
     print("\n=== Sāku autoportaal.ee (Igaunija) ===")
     total_added = 0
     page = 0
@@ -317,6 +326,7 @@ AUTOGIDAS_CARS = "https://autogidas.lt/en/skelbimai/automobiliai/"
 
 
 def get_autogidas_brands():
+    # Fetches the autogidas.lt cars page and returns a list of (url, slug, name) for each brand.
     print("Lasu autogidas.lt markas...")
     try:
         r = requests.get(AUTOGIDAS_CARS, headers=HEADERS_LT, timeout=15)
@@ -343,6 +353,7 @@ def get_autogidas_brands():
 
 
 def scrape_autogidas_page(url, brand_name, conn):
+    # Scrapes one autogidas.lt brand listing page and inserts found cars into the DB.
     print(f"Scrapo autogidas.lt: {url}")
 
     try:
@@ -416,6 +427,7 @@ def scrape_autogidas_page(url, brand_name, conn):
 
 
 def scrape_autogidas_brand(base_url, slug, brand_name):
+    # Paginates through all listing pages for one autogidas.lt brand and scrapes each.
     print(f"\n=== autogidas.lt marka: {brand_name} ===")
     total_added = 0
     page = 1
@@ -438,6 +450,7 @@ def scrape_autogidas_brand(base_url, slug, brand_name):
 
 
 def scrape_autogidas():
+    # Entry point for the Lithuanian scraper — scrapes all brands sequentially (1 thread to avoid rate limiting).
     print("\n=== Sāku autogidas.lt (Lietuva) ===")
     brands = get_autogidas_brands()
     if not brands:
@@ -445,7 +458,7 @@ def scrape_autogidas():
         return 0
 
     total = 0
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with ThreadPoolExecutor(max_workers=1) as executor:
         futures = {executor.submit(scrape_autogidas_brand, url, slug, name): name for url, slug, name in brands}
         for future in as_completed(futures):
             name = futures[future]
@@ -461,6 +474,7 @@ def scrape_autogidas():
 # ---------------------------------------------------------------------------
 
 def main():
+    # Runs all three scrapers in sequence: Latvia (ss.com), Estonia (autoportaal.ee), Lithuania (autogidas.lt).
     print("Sākam datu vākšanu...")
 
     # Latvia — ss.com
