@@ -4,8 +4,6 @@ from bs4 import BeautifulSoup
 import time
 import random
 import re
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 MAIN_URL = "https://www.ss.com/lv/transport/cars/"
@@ -24,7 +22,6 @@ HEADERS_LT = {
 
 EXCLUDE_SLUGS = {"sell", "spare-parts", "oldtimers", "rarities", "wanted", "car-exchange"}
 CATEGORY_SLUGS = {"electric-cars", "sport-cars", "tuned-cars", "exclusive-cars", "retro-cars"}
-MAX_WORKERS = 5
 
 # Brands whose names are two words — needed to split autoportaal.ee "<h2>Brand Model</h2>"
 MULTI_WORD_BRANDS = {
@@ -201,6 +198,25 @@ def scrape_brand(base_url, brand, slug):
     return total_added
 
 
+def scrape_ss():
+    # Entry point for the Latvian scraper — scrapes all brands sequentially.
+    print("\n=== Sāku ss.com (Latvija) ===")
+    brand_urls = get_brand_urls()
+    if not brand_urls:
+        print("Nav atrasta neviena marka.")
+        return 0
+
+    total = 0
+    for url, brand, slug in brand_urls:
+        try:
+            total += scrape_brand(url, brand, slug)
+        except Exception as e:
+            print(f"Kļūda ({brand}): {e}")
+
+    print(f"=== ss.com pabeigts. Pievienoti {total} ieraksti. ===")
+    return total
+
+
 # ---------------------------------------------------------------------------
 # autoportaal.ee (Estonia) scraper
 # ---------------------------------------------------------------------------
@@ -269,11 +285,11 @@ def scrape_autoportaal_page(page_num, conn):
 
             # Use additionalDataMobile which has proper li classes
             mobile = data.find("div", class_="additionalDataMobile")
-            year_li     = mobile.find("li", class_="year")     if mobile else None
-            mileage_li  = mobile.find("li", class_="mileage")  if mobile else None
-            engine_li   = mobile.find("li", class_="power_kw") if mobile else None
+            year_li = mobile.find("li", class_="year") if mobile else None
+            mileage_li = mobile.find("li", class_="mileage") if mobile else None
+            engine_li = mobile.find("li", class_="power_kw") if mobile else None
 
-            year    = year_li.get_text(strip=True)    if year_li    else None
+            year = year_li.get_text(strip=True) if year_li else None
             mileage = clean_int(mileage_li.get_text()) if mileage_li else None
 
             engine_size = None
@@ -458,14 +474,11 @@ def scrape_autogidas():
         return 0
 
     total = 0
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        futures = {executor.submit(scrape_autogidas_brand, url, slug, name): name for url, slug, name in brands}
-        for future in as_completed(futures):
-            name = futures[future]
-            try:
-                total += future.result()
-            except Exception as e:
-                print(f"Kļūda ({name}): {e}")
+    for url, slug, name in brands:
+        try:
+            total += scrape_autogidas_brand(url, slug, name)
+        except Exception as e:
+            print(f"Kļūda ({name}): {e}")
 
     print(f"=== autogidas.lt pabeigts. Pievienoti {total} ieraksti. ===")
     return total
@@ -477,30 +490,16 @@ def main():
     # Runs all three scrapers in sequence: Latvia (ss.com), Estonia (autoportaal.ee), Lithuania (autogidas.lt).
     print("Sākam datu vākšanu...")
 
-    # Latvia — ss.com
     print("\n--- LATVIJA (ss.com) ---")
-    brand_urls = get_brand_urls()
-    if brand_urls:
-        total_lv = 0
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            futures = {executor.submit(scrape_brand, url, brand, slug): brand for url, brand, slug in brand_urls}
-            for future in as_completed(futures):
-                brand = futures[future]
-                try:
-                    total_lv += future.result()
-                except Exception as e:
-                    print(f"Kļūda ({brand}): {e}")
-        print(f"\nLatvija: kopā pievienoti {total_lv} ieraksti.")
+    total_lv = scrape_ss()
 
-    # Estonia — autoportaal.ee
     print("\n--- IGAUNIJA (autoportaal.ee) ---")
     total_ee = scrape_autoportaal()
 
-    # Lithuania — autogidas.lt
     print("\n--- LIETUVA (autogidas.lt) ---")
     total_lt = scrape_autogidas()
 
-    print(f"\nGatavs. LV: {total_lv if brand_urls else 0}, EE: {total_ee}, LT: {total_lt}")
+    print(f"\nGatavs. LV: {total_lv}, EE: {total_ee}, LT: {total_lt}")
 
 
 if __name__ == "__main__":
