@@ -45,6 +45,7 @@ cd scraper/webscraper/webscraper_testing
 python3 scraper.py
 
 # Run one country at a time
+python3 -c "from scraper import scrape_ss; scrape_ss()"                      # Latvia
 python3 -c "from scraper import scrape_autoportaal; scrape_autoportaal()"   # Estonia
 python3 -c "from scraper import scrape_autogidas; scrape_autogidas()"        # Lithuania
 ```
