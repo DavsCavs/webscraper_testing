@@ -8,9 +8,9 @@ Python scraper that collects used car listings from three Baltic sources and sto
 
 | Site | Country | Notes |
 |------|---------|-------|
-| ss.com/lv/transport/cars/ | Latvia | Table-based listings, 5 threads |
+| ss.com/lv/transport/cars/ | Latvia | Table-based listings |
 | autoportaal.ee/en/used-cars | Estonia | Card-based listings, ~519 pages |
-| autogidas.lt/en/skelbimai/automobiliai/ | Lithuania | Brand pages, 20 top brands, 1 thread (rate limits) |
+| autogidas.lt/en/skelbimai/automobiliai/ | Lithuania | Brand pages, 20 top brands |
 
 ---
 
@@ -39,7 +39,7 @@ cd ../nosl-d-pt22 && php artisan migrate
 ## Usage
 
 ```bash
-cd scraper/webscraper/webscraper_testing
+cd webscraper_testing
 
 # Run all three countries
 python3 scraper.py
